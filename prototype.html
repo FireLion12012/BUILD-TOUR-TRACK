@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>SlowRoads-ish — Build & Roll</title>
+<style>
+  html,body{height:100%;margin:0;background:linear-gradient(#89d3ff,#a6e3ff);font-family:Inter,Segoe UI,system-ui,Helvetica,Arial}
+  .wrap{display:flex;gap:16px;align-items:flex-start;padding:12px}
+  .panel{width:300px}
+  h1{font-size:18px;margin:0 0 8px}
+  canvas{background:linear-gradient(#7cc7ff, #d9f1ff);border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,0.12)}
+  .controls{background:rgba(255,255,255,0.7);padding:10px;border-radius:8px;backdrop-filter: blur(4px)}
+  button{display:inline-block;padding:8px 12px;border-radius:8px;border:0;background:#1f6feb;color:#fff;cursor:pointer;margin-right:6px}
+  .muted{color:#334;padding-top:6px;font-size:13px}
+  .tips{font-size:13px;color:#123}
+  .small{font-size:12px;color:#234}
+  footer{margin-top:14px;font-size:12px;color:#123}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <h1>SlowRoads-ish — Build & Roll</h1>
+    <canvas id="game" width="900" height="520"></canvas>
+    <div class="small" style="margin-top:8px">Controls: Click the canvas to place the next road segment (drag vertically to set slope). Press <b>R</b> to restart. Press <b>Space</b> for a small boost.</div>
+  </div>
+
+  <div class="panel">
+    <div class="controls">
+      <div style="margin-bottom:8px"><strong>Score:</strong> <span id="score">0</span></div>
+      <div style="margin-bottom:6px"><strong>Segments left:</strong> <span id="segCount">100</span></div>
+      <div class="muted">Goal: Keep your little car rolling as far as you can by placing smooth road segments. If the car falls into a gap, game over.</div>
+      <hr />
+      <div class="tips"><strong>Tips</strong>
+        <ul>
+          <li>Gentle slopes are safer — avoid huge drops.</li>
+          <li>Use Space to boost over small gaps.</li>
+          <li>You can drag up/down before releasing click to control slope.</li>
+        </ul>
+      </div>
+      <footer>Made for Harsh. — Eclipse ⚡</footer>
+    </div>
+  </div>
+</div>
+
+<script>
+(()=>{
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+
+  // Game state
+  let segments = []; // each: {x1,y1,x2,y2}
+  let nextX = 50, nextY = H - 120;
+  let segLen = 140;
+  let segLimit = 100;
+  let car = {x: 90, y: nextY-20, r: 12, vx: 2.2, vy:0};
+  let gravity = 0.45;
+  let score = 0;
+  let running = true;
+  let placing = false;
+  let preview = null; // {x1,y1,x2,y2}
+  let mouseY = 0;
+
+  const scoreEl = document.getElementById('score');
+  const segCountEl = document.getElementById('segCount');
+
+  function reset(){
+    segments = [];
+    nextX = 50; nextY = H - 120;
+    segLen = 140; segLimit = 100;
+    car = {x: 90, y: nextY-20, r: 12, vx: 2.2, vy:0};
+    score = 0; running = true; preview = null; segCountEl.textContent = segLimit;
+    // create starting flat floor segment
+    const floor = {x1:0,y1: H-60, x2: 1000, y2: H-60};
+    segments.push(floor);
+  }
+
+  reset();
+
+  function worldToCanvas(x){return x;} // already in pixels
+
+  // helper: y at x on a segment
+  function yAt(seg,x){
+    if(x < Math.min(seg.x1, seg.x2)-0.0001 || x > Math.max(seg.x1, seg.x2)+0.0001) return null;
+    const t = (x - seg.x1) / (seg.x2 - seg.x1);
+    return seg.y1 + t * (seg.y2 - seg.y1);
+  }
+
+  function isOnAnySegment(cx, cy){
+    for(let seg of segments){
+      if(cx+0.0001 < Math.min(seg.x1,seg.x2) || cx-0.0001 > Math.max(seg.x1,seg.x2)) continue;
+      const y = yAt(seg,cx);
+      if(y===null) continue;
+      if(Math.abs((cy) - y) <= 10) return {seg,y};
+    }
+    return null;
+  }
+
+  function update(){
+    if(!running) return;
+
+    // physics
+    // check ground under car
+    let on = isOnAnySegment(car.x, car.y + car.r);
+    if(on){
+      // place car exactly on segment
+      car.vy = 0;
+      car.y = on.y - car.r;
+      // compute slope-based vx
+      const dx = on.seg.x2 - on.seg.x1;
+      const dy = on.seg.y2 - on.seg.y1;
+      const slope = dy/dx;
+      const along = Math.sqrt(1 + slope*slope);
+      // car's horizontal speed slightly increases downhill, decreases uphill
+      const gravityEffect = slope * 0.6; // tune
+      car.vx = Math.max(0.6, 2.2 + gravityEffect);
+    } else {
+      car.vy += gravity;
+      car.y += car.vy;
+    }
+
+    car.x += car.vx;
+
+    // camera: move world so car stays ~1/3 from left, implemented by translating draw
+
+    // update score
+    score = Math.floor(car.x / 10);
+    scoreEl.textContent = score;
+
+    // check fail: if car falls below bottom
+    if(car.y - car.r > H + 50){ running = false; }
+
+    // remove far-away segments (keep memory small)
+    if(segments.length > 400) segments.splice(0, segments.length-400);
+
+    segCountEl.textContent = Math.max(0, segLimit);
+  }
+
+  function draw(){
+    ctx.clearRect(0,0,W,H);
+
+    // simple camera offset based on car.x
+    const camX = Math.max(0, car.x - 220);
+
+    // sky
+    // ground gradient already via canvas background
+
+    // draw segments
+    ctx.lineJoin = 'round';
+    for(let seg of segments){
+      ctx.beginPath();
+      ctx.moveTo(seg.x1 - camX, seg.y1);
+      ctx.lineTo(seg.x2 - camX, seg.y2);
+      ctx.lineWidth = 18;
+      ctx.strokeStyle = '#694c1a';
+      ctx.stroke();
+      // top stripe
+      ctx.beginPath();
+      ctx.moveTo(seg.x1 - camX, seg.y1 - 10);
+      ctx.lineTo(seg.x2 - camX, seg.y2 - 10);
+      ctx.lineWidth = 6;
+      ctx.strokeStyle = 'rgba(255,235,160,0.9)';
+      ctx.stroke();
+    }
+
+    // preview segment if placing
+    if(preview){
+      ctx.beginPath();
+      ctx.moveTo(preview.x1 - camX, preview.y1);
+      ctx.lineTo(preview.x2 - camX, preview.y2);
+      ctx.lineWidth = 10;
+      ctx.strokeStyle = 'rgba(30,150,30,0.9)';
+      ctx.stroke();
+    }
+
+    // draw car (circle + wheels)
+    const cx = car.x - camX;
+    const cy = car.y;
+    // body
+    ctx.beginPath();
+    ctx.arc(cx, cy-6, car.r+6, 0, Math.PI*2);
+    ctx.fillStyle = '#ff5c7c';
+    ctx.fill();
+    // wheel
+    ctx.beginPath(); ctx.arc(cx-6, cy+8, 6, 0, Math.PI*2); ctx.fillStyle='#222'; ctx.fill();
+    ctx.beginPath(); ctx.arc(cx+6, cy+8, 6, 0, Math.PI*2); ctx.fillStyle='#222'; ctx.fill();
+
+    // UI overlay
+    if(!running){
+      ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(0,0,W,H);
+      ctx.fillStyle = '#fff'; ctx.font='28px sans-serif'; ctx.fillText('Game Over', W/2-70, H/2-10);
+      ctx.font='18px sans-serif'; ctx.fillText('Press R to restart', W/2-75, H/2+18);
+    }
+  }
+
+  // game loop
+  function loop(){ update(); draw(); requestAnimationFrame(loop); }
+  loop();
+
+  // input: placing segments by click-drag
+  canvas.addEventListener('mousemove', (e)=>{ const rect = canvas.getBoundingClientRect(); mouseY = e.clientY - rect.top; if(placing){ const angle = (mouseY - (nextY - 0)) / 6; const endY = nextY + Math.tan(angle*Math.PI/180) * segLen; preview = {x1: nextX, y1: nextY, x2: nextX+segLen, y2: endY}; }});
+  canvas.addEventListener('mousedown', (e)=>{ placing = true; const rect = canvas.getBoundingClientRect(); mouseY = e.clientY - rect.top; });
+  canvas.addEventListener('mouseup', (e)=>{
+    if(!placing) return;
+    placing = false;
+    if(segLimit <= 0) { preview = null; return; }
+    const angle = (mouseY - (nextY - 0)) / 6; // simple mapping
+    const endY = nextY + Math.tan(angle*Math.PI/180) * segLen;
+    const seg = {x1: nextX, y1: nextY, x2: nextX + segLen, y2: endY};
+    // clamp y to reasonable range
+    if(seg.y2 > H - 20) seg.y2 = H - 20;
+    if(seg.y2 < 40) seg.y2 = 40;
+    segments.push(seg);
+    nextX = seg.x2; nextY = seg.y2;
+    segLimit -= 1;
+    preview = null;
+  });
+
+  // touch controls for phones
+  canvas.addEventListener('touchstart', (e)=>{
+    placing = true;
+    const rect = canvas.getBoundingClientRect();
+    const touch = e.touches[0];
+    mouseY = touch.clientY - rect.top;
+  });
+  canvas.addEventListener('touchmove', (e)=>{
+    const rect = canvas.getBoundingClientRect();
+    const touch = e.touches[0];
+    mouseY = touch.clientY - rect.top;
+    if(placing){
+      const angle = (mouseY - (nextY - 0)) / 6;
+      const endY = nextY + Math.tan(angle*Math.PI/180) * segLen;
+      preview = {x1: nextX, y1: nextY, x2: nextX+segLen, y2: endY};
+    }
+  });
+  canvas.addEventListener('touchend', (e)=>{
+    if(!placing) return;
+    placing = false;
+    if(segLimit <= 0) { preview = null; return; }
+    const angle = (mouseY - (nextY - 0)) / 6;
+    const endY = nextY + Math.tan(angle*Math.PI/180) * segLen;
+    const seg = {x1: nextX, y1: nextY, x2: nextX + segLen, y2: endY};
+    if(seg.y2 > H - 20) seg.y2 = H - 20;
+    if(seg.y2 < 40) seg.y2 = 40;
+    segments.push(seg);
+    nextX = seg.x2; nextY = seg.y2;
+    segLimit -= 1;
+    preview = null;
+  });
+
+  // keyboard
+  window.addEventListener('keydown', (e)=>{
+    if(e.key === 'r' || e.key === 'R') { reset(); }
+    if(e.code === 'Space') { car.vy -= 6; }
+  });
+
+  // small helper so first few segments exist so player can build forward visually
+  for(let i=0;i<4;i++){
+    const s = {x1: nextX, y1: nextY, x2: nextX+segLen, y2: nextY};
+    segments.push(s);
+    nextX = s.x2;
+  }
+
+  // explanatory hint (non-blocking)
+  setTimeout(()=>{
+    // nudge camera a bit so user sees movement
+  },1200);
+
+})();
+</script>
+</body>
+</html>
